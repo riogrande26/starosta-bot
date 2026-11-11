@@ -10,8 +10,9 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === НАЛАШТУВАННЯ ===
-BOT_TOKEN = "@BotFather"
-STAROSTA_ID = "8657527520:AAHOYz-jsgN4rrTA41Z-2NU2rCMO1paGvJw"
+BOT_TOKEN = "8657527520:AAHOYz-jsgN4rrTA41Z-2NU2rCMO1paGvJw"
+
+STAROSTA_ID = 741239201
 
 
 # Розклад пар: 0 - Понеділок, 1 - Вівторок ... 4 - П'ятниця
