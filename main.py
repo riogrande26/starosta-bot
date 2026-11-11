@@ -11,7 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # === НАЛАШТУВАННЯ ===
 BOT_TOKEN = "@BotFather"
-STAROSTA_ID = 741239201
+STAROSTA_ID = 8657527520:AAHOYz-jsgN4rrTA41Z-2NU2rCMO1paGvJw
 
 # Розклад пар: 0 - Понеділок, 1 - Вівторок ... 4 - П'ятниця
 SCHEDULE = {
