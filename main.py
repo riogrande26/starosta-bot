@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import os
 from datetime import datetime
 import aiosqlite
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
@@ -301,11 +303,23 @@ def setup_scheduler():
                 args=[p["time"], p["subject"], p["link"]]
             )
 
+async def ping(request):
+    return web.Response(text="Bot is running!")
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     await init_db()
     setup_scheduler()
     scheduler.start()
+
+    app = web.Application()
+    app.router.add_get('/', ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
