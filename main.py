@@ -34,6 +34,34 @@ DB_PATH = "starosta.db"
 DAYS_UA = ["Понеділок", "Вівторок", "Середа", "Четвер", "П'ятниця", "Субота", "Неділя"]
 DAYS_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 
+# Стартовий розклад групи (автоматично завантажиться, якщо база порожня)
+DEFAULT_SCHEDULE = [
+    # Понеділок (0)
+    (0, "all", "Пр", "09:00", "10:20", "Основи національного спротиву", "", "", ""),
+    (0, "all", "Пр", "10:50", "12:50", "Гістологія", "", "3-год", ""),
+    (0, "all", "Пр", "13:15", "14:35", "Укр. мова", "", "", ""),
+    # Вівторок (1)
+    (1, "all", "Пр", "09:00", "10:20", "Анатомія", "", "", ""),
+    (1, "all", "Пр", "10:50", "12:10", "Анатомія", "", "", ""),
+    (1, "num", "Лек", "13:10", "", "БЖД", "", "1, 3 тижні", ""),
+    (1, "den", "Лек", "13:10", "", "Мед. хімія", "", "2, 4 тижні", ""),
+    # Середа (2)
+    (2, "all", "Пр", "09:00", "10:20", "Мед. хімія", "", "", ""),
+    (2, "num", "Пр", "10:50", "12:10", "Англ. мова", "", "1, 3 тижні", ""),
+    (2, "den", "Пр", "10:50", "12:10", "БЖД", "", "2, 4 тижні", ""),
+    (2, "all", "Лек", "13:10", "", "Основи національного спротиву", "", "", ""),
+    # Четвер (3)
+    (3, "num", "Лек", "08:20", "", "Іст. Укр", "", "1, 3 тижні", ""),
+    (3, "den", "Лек", "08:20", "", "Анатомія", "", "2, 4 тижні", ""),
+    (3, "den", "Пр", "10:50", "12:10", "Фізвиховання", "", "2, 4 тижні", ""),
+    (3, "num", "Пр", "12:55", "14:15", "Іст. Укр", "", "1, 3 тижні", ""),
+    # П'ятниця (4)
+    (4, "all", "Пр", "09:00", "10:20", "Мед. біологія", "", "", ""),
+    (4, "all", "Пр", "10:50", "12:10", "Латинь", "", "", ""),
+    (4, "num", "Лек", "13:10", "", "Мед. біо", "", "1, 3 тижні", ""),
+    (4, "den", "Лек", "13:10", "", "Гістологія", "", "2, 4 тижні", ""),
+]
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone="Europe/Kyiv")
@@ -44,9 +72,7 @@ class AdminStates(StatesGroup):
     waiting_for_announcement = State()
     waiting_for_file = State()
     waiting_for_file_subject = State()
-    # Фото розкладу для ШІ
     waiting_for_schedule_photo = State()
-    # Додавання пари вручну
     add_pair_day = State()
     add_pair_week = State()
     add_pair_type = State()
@@ -55,7 +81,6 @@ class AdminStates(StatesGroup):
     add_pair_teacher = State()
     add_pair_room = State()
     add_pair_link = State()
-    # Домашнє завдання
     hw_subject = State()
     hw_text = State()
     hw_file = State()
@@ -120,32 +145,22 @@ async def init_db():
         """)
         await db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('week_offset', '0')")
 
-        # Автоматичне додавання нових колонок, якщо таблиця schedule залишилась від старої версії
-        cursor = await db.execute("PRAGMA table_info(schedule)")
-        cols = [row[1] for row in await cursor.fetchall()]
-        migrations = {
-            "week_type": "TEXT DEFAULT 'all'",
-            "pair_type": "TEXT DEFAULT 'Пр'",
-            "start_time": "TEXT DEFAULT '09:00'",
-            "end_time": "TEXT DEFAULT ''",
-            "teacher": "TEXT DEFAULT ''",
-            "room": "TEXT DEFAULT ''",
-            "link": "TEXT DEFAULT ''",
-            "poll_enabled": "INTEGER DEFAULT 1",
-        }
-        for col_name, col_def in migrations.items():
-            if col_name not in cols:
-                await db.execute(f"ALTER TABLE schedule ADD COLUMN {col_name} {col_def}")
-
-        # Якщо у старій таблиці час був у колонці pair_time — переносимо в start_time
-        if "pair_time" in cols:
-            await db.execute("UPDATE schedule SET start_time = pair_time WHERE start_time IS NULL OR start_time = '09:00'")
+        # Заповнюємо стартовим розкладом, якщо таблиця порожня
+        cursor = await db.execute("SELECT COUNT(*) FROM schedule")
+        count = (await cursor.fetchone())[0]
+        if count == 0:
+            await db.executemany(
+                """
+                INSERT INTO schedule (day_idx, week_type, pair_type, start_time, end_time, subject, teacher, room, link)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                DEFAULT_SCHEDULE,
+            )
 
         await db.commit()
 
 
 async def send_db_backup():
-    """Тихий бекап бази старості, щоб дані не губилися при перезапуску безкоштовного Render"""
     try:
         if os.path.exists(DB_PATH):
             doc = FSInputFile(DB_PATH, filename="starosta_backup.db")
@@ -173,8 +188,8 @@ async def get_current_week_type() -> str:
 
 def week_label(week_type: str) -> str:
     return {
-        "num": "Чисельник",
-        "den": "Знаменник",
+        "num": "Чисельник (1,3 тижні)",
+        "den": "Знаменник (2,4 тижні)",
         "all": "Кожен тиждень",
     }.get(week_type, "Кожен тиждень")
 
@@ -259,18 +274,25 @@ def attendance_kb(pair_time: str):
 
 # === РОЗПІЗНАВАННЯ ФОТО РОЗКЛАДУ ЧЕРЕЗ GEMINI ШІ ===
 async def parse_schedule_with_gemini(image_bytes: bytes, mime_type: str = "image/jpeg") -> list:
-    if not GEMINI_API_KEY or "ВСТАВ_СЮДИ" in GEMINI_API_KEY:
-        raise ValueError("Не вказано GEMINI_API_KEY у налаштуваннях бота!")
+    if not GEMINI_API_KEY:
+        raise ValueError("Не вказано GEMINI_API_KEY!")
 
     b64_data = base64.b64encode(image_bytes).decode("utf-8")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+
+    # Підтримка як класичних ключів AIza..., так і нових auth-ключів AQ.Ab8RN...
+    if GEMINI_API_KEY.startswith("AQ."):
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        headers["Authorization"] = f"Bearer {GEMINI_API_KEY}"
+    else:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
     prompt = """
     Ти помічник старости університету. Проаналізуй це фото/скріншот розкладу пар і витягни всі заняття у вигляді строгого JSON-масиву об'єктів.
     Поля кожного об'єкта:
     - "day_idx": число від 0 до 5 (0 = Понеділок, 1 = Вівторок, 2 = Середа, 3 = Четвер, 4 = П'ятниця, 5 = Субота).
-    - "week_type": "all" (якщо пара кожен тиждень), "num" (якщо чисельник / верхній / непарний тиждень), "den" (якщо знаменник / нижній / парний тиждень).
-    - "pair_type": "Лек" (якщо лекція) або "Пр" (якщо практичне заняття, семінар або лабораторна). За замовчуванням "Пр".
+    - "week_type": "all" (якщо пара кожен тиждень), "num" (якщо чисельник / 1,3 тижні / непарний тиждень), "den" (якщо знаменник / 2,4 тижні / парний тиждень).
+    - "pair_type": "Лек" (якщо лекція) або "Пр" (якщо практичне заняття). За замовчуванням "Пр".
     - "start_time": час початку у форматі "HH:MM" (наприклад "09:00").
     - "end_time": час кінця у форматі "HH:MM" (наприклад "10:20"), або "" якщо не вказано.
     - "subject": назва предмету українською мовою.
@@ -291,10 +313,10 @@ async def parse_schedule_with_gemini(image_bytes: bytes, mime_type: str = "image
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=payload, timeout=45) as resp:
+        async with session.post(url, headers=headers, json=payload, timeout=45) as resp:
             if resp.status != 200:
                 err_text = await resp.text()
-                raise RuntimeError(f"Помилка Gemini API ({resp.status}): {err_text[:200]}")
+                raise RuntimeError(f"Помилка Gemini API ({resp.status}): {err_text[:250]}")
             result = await resp.json()
 
     raw_text = result["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -314,7 +336,7 @@ async def notify_pair(week_type: str, pair_type: str, start_time: str, end_time:
 
     time_str = f"{start_time}–{end_time}" if end_time else start_time
     teacher_line = f"👨‍🏫 *Викладач:* {teacher}\n" if teacher else ""
-    room_line = f"🚪 *Аудиторія:* {room}\n" if room else ""
+    room_line = f"🚪 *Примітка / Ауд.:* {room}\n" if room else ""
     link_line = f"🔗 [Підключитися до пари]({link})\n" if link else ""
     week_note = f" • _{week_label(week_type)}_" if week_type != "all" else ""
 
@@ -408,7 +430,7 @@ async def restore_db_from_backup(message: types.Message, state: FSMContext):
         await bot.download_file(file_info.file_path, DB_PATH)
         await init_db()
         await reload_scheduler()
-        await message.answer("✅ Базу даних успішно відновлено з файлу! Усі пари, ДЗ та матеріали на місці.")
+        await message.answer("✅ Базу даних успішно відновлено з файлу!")
 
 
 @dp.message(F.text == "🔄 Перемкнути тиждень")
@@ -437,8 +459,8 @@ async def ai_schedule_start(message: types.Message, state: FSMContext):
     if message.from_user.id != STAROSTA_ID:
         return
     await message.answer(
-        "📸 Надішліть **фото або скріншот** вашого розкладу.\n\n"
-        "ШІ автоматично розпізнає дні тижня, час, предмети, викладачів, аудиторії, тип пари (Лек/Пр) та чисельник/знаменник.",
+        "📸 Надішліть **фото або скріншот** розкладу.\n"
+        "ШІ розпізнає нові пари та додасть їх у розклад.",
         parse_mode="Markdown",
         reply_markup=cancel_kb(),
     )
@@ -447,7 +469,7 @@ async def ai_schedule_start(message: types.Message, state: FSMContext):
 
 @dp.message(AdminStates.waiting_for_schedule_photo, F.photo)
 async def ai_schedule_process(message: types.Message, state: FSMContext):
-    status_msg = await message.answer("⏳ Аналізую фото розкладу за допомогою ШІ, зачекайте кілька секунд...")
+    status_msg = await message.answer("⏳ Аналізую фото розкладу за допомогою ШІ...")
     try:
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
@@ -456,7 +478,7 @@ async def ai_schedule_process(message: types.Message, state: FSMContext):
 
         pairs = await parse_schedule_with_gemini(image_bytes)
         if not pairs:
-            await status_msg.edit_text("⚠️ Не вдалося знайти пари на цьому зображенні. Спробуйте більш чітке фото.")
+            await status_msg.edit_text("⚠️ Не вдалося знайти пари на зображенні.")
             return
 
         async with aiosqlite.connect(DB_PATH) as db:
@@ -488,8 +510,7 @@ async def ai_schedule_process(message: types.Message, state: FSMContext):
         await state.clear()
         await status_msg.delete()
         await message.answer(
-            f"✅ Успішно розпізнано та додано **{len(pairs)}** пар(и) у розклад!\n"
-            f"Натисніть **📅 Розклад**, щоб перевірити по днях.",
+            f"✅ Успішно додано **{len(pairs)}** пар(и) у розклад!",
             parse_mode="Markdown",
             reply_markup=main_kb(is_admin=True),
         )
@@ -498,7 +519,7 @@ async def ai_schedule_process(message: types.Message, state: FSMContext):
         await status_msg.edit_text(f"❌ Помилка при розпізнаванні: `{e}`", parse_mode="Markdown")
 
 
-# === ПЕРЕГЛЯД РОЗКЛАДУ (В СТИЛІ СКРІНШОТІВ) ===
+# === ПЕРЕГЛЯД РОЗКЛАДУ ===
 async def render_day_schedule(day_idx: int, forced_week: str = None):
     cur_week = forced_week if forced_week else await get_current_week_type()
     cur_week_name = week_label(cur_week)
@@ -522,7 +543,7 @@ async def render_day_schedule(day_idx: int, forced_week: str = None):
     kb_rows = [
         [
             InlineKeyboardButton(
-                text=f"🟣 Зараз: {cur_week_name} (перемкнути на {other_week_label})",
+                text=f"🟣 {cur_week_name} ➔ показати {other_week_label}",
                 callback_data=f"viewweek_{day_idx}_{other_week}",
             )
         ],
@@ -547,7 +568,7 @@ async def render_day_schedule(day_idx: int, forced_week: str = None):
             text += f"`[{p_type}]` *{subj}*{week_badge}\n"
             text += f"🕒 {time_range}"
             if room:
-                text += f"  •  🚪 {room}"
+                text += f"  •  📌 {room}"
             text += "\n"
             if teacher:
                 text += f"👤 _{teacher}_\n"
@@ -676,7 +697,7 @@ async def add_pair_subject_chosen(message: types.Message, state: FSMContext):
 async def add_pair_teacher_chosen(message: types.Message, state: FSMContext):
     teacher = "" if message.text == "⏭ Пропустити викладача" else message.text.strip()
     await state.update_data(teacher=teacher)
-    await message.answer("Введіть номер аудиторії або замітку (наприклад `204` або `Сангiг`):", parse_mode="Markdown", reply_markup=skip_kb("⏭ Пропустити аудиторію"))
+    await message.answer("Введіть номер аудиторії або замітку:", reply_markup=skip_kb("⏭ Пропустити аудиторію"))
     await state.set_state(AdminStates.add_pair_room)
 
 
